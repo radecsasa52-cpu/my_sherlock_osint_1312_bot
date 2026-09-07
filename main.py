@@ -18,19 +18,17 @@ def run_flask():
 
 TOKEN = os.environ.get("BOT_TOKEN")
 
-# Платформы для глубокой проверки
 SERVICES = {
     "GitHub": "https://api.github.com/users/{}",
     "Reddit": "https://www.reddit.com/user/{}/about.json",
-    "Steam": "https://steamcommunity.com/id/{}",
-    "Pinterest": "https://www.pinterest.com/{}/"
+    "Steam": "https://steamcommunity.com/id/{}"
 }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome = (
         "🕵️‍♂️ **OSINT Досье Бот**\n\n"
         "Отправь мне **никнейм** (например: `alex`) или **Telegram ID** (число),\n"
-        "и я сформирую детальный отчет по открытым базам и профилям."
+        "и я сформирую подробный отчет."
     )
     await update.message.reply_text(welcome, parse_mode="Markdown")
 
@@ -40,11 +38,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     dossier = [f"📋 **ОТЧЕТ OSINT ДОСЬЕ:** `{query}`\n" + "─"*30]
 
-    # --- 1. ПРОВЕРКА TELEGRAM (если передали ID или Nickname) ---
+    # --- 1. ПРОВЕРКА TELEGRAM ---
     if query.isdigit():
         dossier.append("📊 **Данные Telegram ID:**")
         dossier.append(f"• ID: `{query}`")
-        dossier.append(f"• Ссылка на профиль: [Открыть](tg://user?id={query})")
+        dossier.append(f"• Ссылка: [Открыть](tg://user?id={query})")
     else:
         try:
             tg_res = requests.get(f"https://t.me/{query}", timeout=5)
@@ -52,7 +50,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 dossier.append("📱 **Telegram Профиль:** ✅ Найден")
                 if '<meta property="og:title" content="' in tg_res.text:
                     title = tg_res.text.split('<meta property="og:title" content="')[1].split('"')[0]
-                    dossier.append(f"• Отображаемое имя: `{title}`")
+                    dossier.append(f"• Имя: `{title}`")
                 if '<div class="tgme_page_description">' in tg_res.text:
                     bio = tg_res.text.split('<div class="tgme_page_description">')[1].split('</div>')[0]
                     dossier.append(f"• Описание (Bio): _{bio.strip()}_")
@@ -61,24 +59,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             dossier.append("📱 **Telegram Профиль:** Ошибка проверки")
 
-    dossier.append("\n🌐 **Найденные аккаунты в сервисах:**")
+    dossier.append("\n🌐 **Данные из связанных сервисов:**")
 
-    # --- 2. ГЛУБОКАЯ ПРОВЕРКА ПЛАТФОРМ ---
+    # --- 2. ДЕТАЛИЗАЦИЯ ИЗ СЕРВИСОВ ---
     found_count = 0
     
-    # GitHub API
+    # GitHub
     try:
         gh_res = requests.get(SERVICES["GitHub"].format(query), timeout=4).json()
         if "id" in gh_res:
             found_count += 1
             dossier.append(f"• **GitHub**: ✅ Найден")
             dossier.append(f"  ├ Имя: `{gh_res.get('name', 'Не указано')}`")
-            dossier.append(f"  ├ Репозиторий: `{gh_res.get('public_repos', 0)}` шт.")
+            dossier.append(f"  ├ Публичные репозитории: `{gh_res.get('public_repos', 0)}` шт.")
             dossier.append(f"  └ Город/Локация: `{gh_res.get('location', 'Не указано')}`")
     except Exception:
         pass
 
-    # Reddit API
+    # Reddit
     try:
         rd_res = requests.get(SERVICES["Reddit"].format(query), headers={"User-Agent": "Mozilla/5.0"}, timeout=4).json()
         if "data" in rd_res:
@@ -93,14 +91,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         st_res = requests.get(SERVICES["Steam"].format(query), timeout=4)
         if st_res.status_code == 200 and "actual_persona_name" in st_res.text:
             found_count += 1
-            dossier.append(f"• **Steam**: ✅ Аккаунт существует")
+            dossier.append(f"• **Steam**: ✅ Профиль существует")
     except Exception:
         pass
 
     if found_count == 0:
-        dossier.append("• Дополнительных публичных профилей по базам API не обнаружено.")
+        dossier.append("• Публичные данные в открытых API не найдены.")
 
-    # Вывод результата
     final_text = "\n".join(dossier)
     await status_msg.edit_text(final_text, parse_mode="Markdown", disable_web_page_preview=True)
 
