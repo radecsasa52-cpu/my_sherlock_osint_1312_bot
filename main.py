@@ -5,96 +5,118 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- Фейковый веб-сервер для проходимости проверок Render ---
+# --- Веб-сервер для поддержания работы на Render ---
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def health_check():
-    return "Bot is alive!", 200
+    return "OSINT Bot is active", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host="0.0.0.0", port=port)
 
-# --- Логика Telegram-бота ---
 TOKEN = os.environ.get("BOT_TOKEN")
 
-CHECK_PLATFORMS = {
-    "GitHub": "https://github.com/{}",
-    "Telegram": "https://t.me/{}",
-    "Reddit": "https://www.reddit.com/user/{}",
-    "Pinterest": "https://www.pinterest.com/{}",
+# Платформы для глубокой проверки
+SERVICES = {
+    "GitHub": "https://api.github.com/users/{}",
+    "Reddit": "https://www.reddit.com/user/{}/about.json",
     "Steam": "https://steamcommunity.com/id/{}",
-    "Habr": "https://habr.com/ru/users/{}"
+    "Pinterest": "https://www.pinterest.com/{}/"
 }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = (
-        "🔍 **Sherlock OSINT Bot**\n\n"
-        "Отправь мне **никнейм** (без символа @) или **Telegram ID**, "
-        "чтобы начать поиск по открытым источникам."
+    welcome = (
+        "🕵️‍♂️ **OSINT Досье Бот**\n\n"
+        "Отправь мне **никнейм** (например: `alex`) или **Telegram ID** (число),\n"
+        "и я сформирую детальный отчет по открытым базам и профилям."
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    await update.message.reply_text(welcome, parse_mode="Markdown")
 
-async def search_nickname(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip().lstrip("@")
+    status_msg = await update.message.reply_text(f"⏳ Собираю досье по запросу `{query}`...", parse_mode="Markdown")
 
+    dossier = [f"📋 **ОТЧЕТ OSINT ДОСЬЕ:** `{query}`\n" + "─"*30]
+
+    # --- 1. ПРОВЕРКА TELEGRAM (если передали ID или Nickname) ---
     if query.isdigit():
-        await analyze_tg_id(update, query)
-        return
-
-    msg = await update.message.reply_text(f"🔎 Сканирую открытые источники для никнейма `{query}`...", parse_mode="Markdown")
-
-    found_links = []
-    
-    for platform, url_pattern in CHECK_PLATFORMS.items():
-        url = url_pattern.format(query)
-        try:
-            res = requests.get(url, timeout=3, headers={"User-Agent": "Mozilla/5.0"})
-            if res.status_code == 200:
-                found_links.append(f"✅ [{platform}]({url}) — Профиль найден")
-        except Exception:
-            pass
-
-    osint_links = (
-        f"\n\n🌐 **OSINT Досье и ссылки для поиска:**\n"
-        f"• [Google Search](https://www.google.com/search?q=\"{query}\")\n"
-        f"• [WhatsMyName Search](https://whatsmyname.app/?q={query})\n"
-        f"• [Namechk Search](https://namechk.com/namechk/?q={query})\n"
-        f"• [TG User search](https://t.me/{query})\n"
-    )
-
-    if found_links:
-        result_text = "🎯 **Найденные аккаунты:**\n" + "\n".join(found_links) + osint_links
+        dossier.append("📊 **Данные Telegram ID:**")
+        dossier.append(f"• ID: `{query}`")
+        dossier.append(f"• Ссылка на профиль: [Открыть](tg://user?id={query})")
     else:
-        result_text = "❌ Точных совпадений по базовым сервисам не найдено.\n" + osint_links
+        try:
+            tg_res = requests.get(f"https://t.me/{query}", timeout=5)
+            if "tgme_page_title" in tg_res.text:
+                dossier.append("📱 **Telegram Профиль:** ✅ Найден")
+                if '<meta property="og:title" content="' in tg_res.text:
+                    title = tg_res.text.split('<meta property="og:title" content="')[1].split('"')[0]
+                    dossier.append(f"• Отображаемое имя: `{title}`")
+                if '<div class="tgme_page_description">' in tg_res.text:
+                    bio = tg_res.text.split('<div class="tgme_page_description">')[1].split('</div>')[0]
+                    dossier.append(f"• Описание (Bio): _{bio.strip()}_")
+            else:
+                dossier.append("📱 **Telegram Профиль:** ❌ Не найден или скрыт")
+        except Exception:
+            dossier.append("📱 **Telegram Профиль:** Ошибка проверки")
 
-    await msg.edit_text(result_text, parse_mode="Markdown", disable_web_page_preview=True)
+    dossier.append("\n🌐 **Найденные аккаунты в сервисах:**")
 
-async def analyze_tg_id(update: Update, user_id: str):
-    msg = f"🆔 **Анализ Telegram ID:** `{user_id}`\n\n"
-    msg += (
-        f"• [Профиль в Telegram](tg://user?id={user_id})\n"
-        f"• [Проверка в Sangmata](https://t.me/Sangmata_beta_bot)\n"
-        f"• [Поиск упоминаний в Google](https://www.google.com/search?q=\"{user_id}\")"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    # --- 2. ГЛУБОКАЯ ПРОВЕРКА ПЛАТФОРМ ---
+    found_count = 0
+    
+    # GitHub API
+    try:
+        gh_res = requests.get(SERVICES["GitHub"].format(query), timeout=4).json()
+        if "id" in gh_res:
+            found_count += 1
+            dossier.append(f"• **GitHub**: ✅ Найден")
+            dossier.append(f"  ├ Имя: `{gh_res.get('name', 'Не указано')}`")
+            dossier.append(f"  ├ Репозиторий: `{gh_res.get('public_repos', 0)}` шт.")
+            dossier.append(f"  └ Город/Локация: `{gh_res.get('location', 'Не указано')}`")
+    except Exception:
+        pass
+
+    # Reddit API
+    try:
+        rd_res = requests.get(SERVICES["Reddit"].format(query), headers={"User-Agent": "Mozilla/5.0"}, timeout=4).json()
+        if "data" in rd_res:
+            found_count += 1
+            karma = rd_res["data"].get("total_karma", 0)
+            dossier.append(f"• **Reddit**: ✅ Найден (Карма: `{karma}`)")
+    except Exception:
+        pass
+
+    # Steam
+    try:
+        st_res = requests.get(SERVICES["Steam"].format(query), timeout=4)
+        if st_res.status_code == 200 and "actual_persona_name" in st_res.text:
+            found_count += 1
+            dossier.append(f"• **Steam**: ✅ Аккаунт существует")
+    except Exception:
+        pass
+
+    if found_count == 0:
+        dossier.append("• Дополнительных публичных профилей по базам API не обнаружено.")
+
+    # Вывод результата
+    final_text = "\n".join(dossier)
+    await status_msg.edit_text(final_text, parse_mode="Markdown", disable_web_page_preview=True)
 
 def main():
     if not TOKEN:
-        print("Ошибка: Переменная BOT_TOKEN не задана!")
+        print("Ошибка: BOT_TOKEN не найден!")
         return
 
-    # Запуск Flask в отдельном потоке
     threading.Thread(target=run_flask, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_nickname))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("Бот запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-        
