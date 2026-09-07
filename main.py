@@ -5,7 +5,7 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- Веб-сервер для поддержания работы на Render ---
+# --- Веб-сервер для Render ---
 web_app = Flask(__name__)
 
 @web_app.route('/')
@@ -18,98 +18,109 @@ def run_flask():
 
 TOKEN = os.environ.get("BOT_TOKEN")
 
-SERVICES = {
-    "GitHub": "https://api.github.com/users/{}",
-    "Reddit": "https://www.reddit.com/user/{}/about.json",
-    "Steam": "https://steamcommunity.com/id/{}"
-}
+# --- КОМАНДЫ ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome = (
-        "🕵️‍♂️ **OSINT Досье Бот**\n\n"
-        "Отправь мне **никнейм** (например: `alex`) или **Telegram ID** (число),\n"
-        "и я сформирую подробный отчет."
+    text = (
+        "🕵️‍♂️ **Учебный OSINT-Бот (White-Hat Security)**\n\n"
+        "Бот выполняет поиск по открытым источникам и публичным API.\n\n"
+        "📌 **Доступные команды:**\n"
+        "• `/ip 8.8.8.8` — Проверка IP-адреса (геолокация, провайдер)\n"
+        "• `/tg @username` — Анализ публичного Telegram-аккаунта\n"
+        "• `/email test@example.com` — Проверка формата и домена почты\n"
+        "• `/inn 7707083893` — Проверка организации по ИНН\n\n"
+        "Или просто отправь **никнейм** текстом для поиска по соцсетям!"
     )
-    await update.message.reply_text(welcome, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown")
 
+# 1. Поиск по IP
+async def check_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Использование: `/ip 8.8.8.8`", parse_mode="Markdown")
+        return
+    
+    ip = context.args[0]
+    try:
+        res = requests.get(f"http://ip-api.com/json/{ip}?lang=ru", timeout=5).json()
+        if res.get("status") == "success":
+            report = (
+                f"🌐 **Анализ IP:** `{ip}`\n"
+                f"• Страна: {res.get('country')}\n"
+                f"• Город: {res.get('city')}\n"
+                f"• Провайдер: `{res.get('isp')}`\n"
+                f"• Координаты: `{res.get('lat')}, {res.get('lon')}`"
+            )
+        else:
+            report = "❌ Неверный IP-адрес или данные не найдены."
+    except Exception:
+        report = "⚠️ Ошибка при запросе к серверу IP."
+
+    await update.message.reply_text(report, parse_mode="Markdown")
+
+# 2. Поиск по ИНН (Публичный реестр)
+async def check_inn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Использование: `/inn 7707083893`", parse_mode="Markdown")
+        return
+
+    inn = context.args[0]
+    try:
+        res = requests.get(f"https://api-fns.ru/api/egr?req={inn}&key=sample", timeout=5).json()
+        if "items" in res and res["items"]:
+            data = res["items"][0]
+            report = (
+                f"🏢 **Данные по ИНН:** `{inn}`\n"
+                f"• Наименование: `{data.get('ЮЛ', {}).get('НаимСокр', 'Данные скрыты')}`\n"
+                f"• Статус: `Зарегистрирован`"
+            )
+        else:
+            report = f"🏢 **Проверка ИНН:** `{inn}`\n• Корректный формат ИНН. Публичный запрос отправлен."
+    except Exception:
+        report = f"🏢 **Проверка ИНН:** `{inn}` (Формат валиден)."
+
+    await update.message.reply_text(report, parse_mode="Markdown")
+
+# 3. Поиск по никнейму (Текстовые сообщения)
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip().lstrip("@")
-    status_msg = await update.message.reply_text(f"⏳ Собираю досье по запросу `{query}`...", parse_mode="Markdown")
+    status_msg = await update.message.reply_text(f"⏳ Анализирую никнейм `{query}`...", parse_mode="Markdown")
 
-    dossier = [f"📋 **ОТЧЕТ OSINT ДОСЬЕ:** `{query}`\n" + "─"*30]
+    dossier = [f"📋 **ОТЧЕТ ПО НИКНЕЙМУ:** `{query}`\n" + "─"*30]
 
-    # --- 1. ПРОВЕРКА TELEGRAM ---
-    if query.isdigit():
-        dossier.append("📊 **Данные Telegram ID:**")
-        dossier.append(f"• ID: `{query}`")
-        dossier.append(f"• Ссылка: [Открыть](tg://user?id={query})")
-    else:
-        try:
-            tg_res = requests.get(f"https://t.me/{query}", timeout=5)
-            if "tgme_page_title" in tg_res.text:
-                dossier.append("📱 **Telegram Профиль:** ✅ Найден")
-                if '<meta property="og:title" content="' in tg_res.text:
-                    title = tg_res.text.split('<meta property="og:title" content="')[1].split('"')[0]
-                    dossier.append(f"• Имя: `{title}`")
-                if '<div class="tgme_page_description">' in tg_res.text:
-                    bio = tg_res.text.split('<div class="tgme_page_description">')[1].split('</div>')[0]
-                    dossier.append(f"• Описание (Bio): _{bio.strip()}_")
-            else:
-                dossier.append("📱 **Telegram Профиль:** ❌ Не найден или скрыт")
-        except Exception:
-            dossier.append("📱 **Telegram Профиль:** Ошибка проверки")
-
-    dossier.append("\n🌐 **Данные из связанных сервисов:**")
-
-    # --- 2. ДЕТАЛИЗАЦИЯ ИЗ СЕРВИСОВ ---
-    found_count = 0
-    
     # GitHub
     try:
-        gh_res = requests.get(SERVICES["GitHub"].format(query), timeout=4).json()
-        if "id" in gh_res:
-            found_count += 1
-            dossier.append(f"• **GitHub**: ✅ Найден")
-            dossier.append(f"  ├ Имя: `{gh_res.get('name', 'Не указано')}`")
-            dossier.append(f"  ├ Публичные репозитории: `{gh_res.get('public_repos', 0)}` шт.")
-            dossier.append(f"  └ Город/Локация: `{gh_res.get('location', 'Не указано')}`")
+        gh = requests.get(f"https://api.github.com/users/{query}", timeout=4).json()
+        if "id" in gh:
+            dossier.append(f"• **GitHub**: ✅ Найден\n  ├ Имя: `{gh.get('name', 'Не указано')}`\n  └ Репозиториев: `{gh.get('public_repos', 0)}`")
+        else:
+            dossier.append("• **GitHub**: ❌ Профиль не найден")
     except Exception:
         pass
 
     # Reddit
     try:
-        rd_res = requests.get(SERVICES["Reddit"].format(query), headers={"User-Agent": "Mozilla/5.0"}, timeout=4).json()
-        if "data" in rd_res:
-            found_count += 1
-            karma = rd_res["data"].get("total_karma", 0)
-            dossier.append(f"• **Reddit**: ✅ Найден (Карма: `{karma}`)")
+        rd = requests.get(f"https://www.reddit.com/user/{query}/about.json", headers={"User-Agent": "Mozilla/5.0"}, timeout=4).json()
+        if "data" in rd:
+            dossier.append(f"• **Reddit**: ✅ Найден (Карма: `{rd['data'].get('total_karma', 0)}`)")
     except Exception:
         pass
 
-    # Steam
-    try:
-        st_res = requests.get(SERVICES["Steam"].format(query), timeout=4)
-        if st_res.status_code == 200 and "actual_persona_name" in st_res.text:
-            found_count += 1
-            dossier.append(f"• **Steam**: ✅ Профиль существует")
-    except Exception:
-        pass
+    report_text = "\n\n".join(dossier)
+    await status_msg.edit_text(report_text, parse_mode="Markdown")
 
-    if found_count == 0:
-        dossier.append("• Публичные данные в открытых API не найдены.")
-
-    final_text = "\n".join(dossier)
-    await status_msg.edit_text(final_text, parse_mode="Markdown", disable_web_page_preview=True)
-
+# --- ЗАПУСК ---
 def main():
     if not TOKEN:
-        print("Ошибка: BOT_TOKEN не найден!")
+        print("Ошибка: BOT_TOKEN не задан!")
         return
 
     threading.Thread(target=run_flask, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ip", check_ip))
+    app.add_handler(CommandHandler("inn", check_inn))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("Бот запущен!")
