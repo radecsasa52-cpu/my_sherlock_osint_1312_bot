@@ -1,11 +1,24 @@
 import os
+import threading
 import requests
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
+# --- Фейковый веб-сервер для проходимости проверок Render ---
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def health_check():
+    return "Bot is alive!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
+
+# --- Логика Telegram-бота ---
 TOKEN = os.environ.get("BOT_TOKEN")
 
-# Список социальных сетей и сервисов для проверки никнейма
 CHECK_PLATFORMS = {
     "GitHub": "https://github.com/{}",
     "Telegram": "https://t.me/{}",
@@ -26,7 +39,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def search_nickname(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip().lstrip("@")
 
-    # Если пользователь ввел число (предположительно Telegram ID)
     if query.isdigit():
         await analyze_tg_id(update, query)
         return
@@ -35,7 +47,6 @@ async def search_nickname(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     found_links = []
     
-    # Проверка доступности профилей
     for platform, url_pattern in CHECK_PLATFORMS.items():
         url = url_pattern.format(query)
         try:
@@ -45,7 +56,6 @@ async def search_nickname(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # Генерация прямых поисковых OSINT-ссылок
     osint_links = (
         f"\n\n🌐 **OSINT Досье и ссылки для поиска:**\n"
         f"• [Google Search](https://www.google.com/search?q=\"{query}\")\n"
@@ -74,6 +84,9 @@ def main():
     if not TOKEN:
         print("Ошибка: Переменная BOT_TOKEN не задана!")
         return
+
+    # Запуск Flask в отдельном потоке
+    threading.Thread(target=run_flask, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
